@@ -6,8 +6,12 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from hellaswag import render_example, iterate_examples
+# from hellaswag import render_example, iterate_examples
 # -----------------------------------------------------------------------------
+#Mamba GPT updates
+from mamba.mamba_ssm import Mamba2
+
+
 
 class CausalSelfAttention(nn.Module):
 
@@ -72,20 +76,38 @@ class Block(nn.Module):
 class GPTConfig:
     block_size: int = 1024 # max sequence length
     vocab_size: int = 50257 # number of tokens: 50,000 BPE merges + 256 bytes tokens + 1 <|endoftext|> token
-    n_layer: int = 12 # number of layers
-    n_head: int = 12 # number of heads
+    n_layer: int = 6 # number of layers
+    n_head: int = 6 # number of heads
     n_embd: int = 768 # embedding dimension
+    mamba_d_model: int = 768
+
+
+class MambaBlock(nn.Module):
+    pass
 
 class GPT(nn.Module):
 
     def __init__(self, config):
         super().__init__()
         self.config = config
-
+        block_list = []
+        # block_list = [Block(config) for _ in range(config.n_layer)] 
+        #List comprehension is no faster than the ordinary for loop
+        for i in range(config.n_layer):
+            if i%2==0:
+                block_list.append(Block(config))
+            else:
+                block_list.append(Mamba2(
+                    # This module uses roughly 3 * expand * d_model^2 parameters
+                    d_model= config.mamba_d_model, # Model dimension d_model
+                    d_state=64,  # SSM state expansion factor, typically 64 or 128
+                    d_conv=4,    # Local convolution width
+                    expand=2,    # Block expansion factor
+                ))
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            h = nn.ModuleList(block_list),
             ln_f = nn.LayerNorm(config.n_embd),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -387,7 +409,7 @@ for step in range(max_steps):
             for _ in range(val_loss_steps):
                 x, y = val_loader.next_batch()
                 x, y = x.to(device), y.to(device)
-                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                with torch.autocast(device_type=device_type, dtype=torch.float16):
                     logits, loss = model(x, y)
                 loss = loss / val_loss_steps
                 val_loss_accum += loss.detach()
@@ -411,37 +433,37 @@ for step in range(max_steps):
                 torch.save(checkpoint, checkpoint_path)
 
     # once in a while evaluate hellaswag
-    if (step % 250 == 0 or last_step) and (not use_compile):
-        num_correct_norm = 0
-        num_total = 0
-        for i, example in enumerate(iterate_examples("val")):
-            # only process examples where i % ddp_world_size == ddp_rank
-            if i % ddp_world_size != ddp_rank:
-                continue
-            # render the example into tokens and labels
-            _, tokens, mask, label = render_example(example)
-            tokens = tokens.to(device)
-            mask = mask.to(device)
-            # get the logits
-            with torch.no_grad():
-                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                    logits, loss = model(tokens)
-                pred_norm = get_most_likely_row(tokens, mask, logits)
-            num_total += 1
-            num_correct_norm += int(pred_norm == label)
-        # reduce the stats across all processes
-        if ddp:
-            num_total = torch.tensor(num_total, dtype=torch.long, device=device)
-            num_correct_norm = torch.tensor(num_correct_norm, dtype=torch.long, device=device)
-            dist.all_reduce(num_total, op=dist.ReduceOp.SUM)
-            dist.all_reduce(num_correct_norm, op=dist.ReduceOp.SUM)
-            num_total = num_total.item()
-            num_correct_norm = num_correct_norm.item()
-        acc_norm = num_correct_norm / num_total
-        if master_process:
-            print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}")
-            with open(log_file, "a") as f:
-                f.write(f"{step} hella {acc_norm:.4f}\n")
+    # if (step % 250 == 0 or last_step) and (not use_compile):
+    #     num_correct_norm = 0
+    #     num_total = 0
+    #     for i, example in enumerate(iterate_examples("val")):
+    #         # only process examples where i % ddp_world_size == ddp_rank
+    #         if i % ddp_world_size != ddp_rank:
+    #             continue
+    #         # render the example into tokens and labels
+    #         _, tokens, mask, label = render_example(example)
+    #         tokens = tokens.to(device)
+    #         mask = mask.to(device)
+    #         # get the logits
+    #         with torch.no_grad():
+    #             with torch.autocast(device_type=device_type, dtype=torch.float16):
+    #                 logits, loss = model(tokens)
+    #             pred_norm = get_most_likely_row(tokens, mask, logits)
+    #         num_total += 1
+    #         num_correct_norm += int(pred_norm == label)
+    #     # reduce the stats across all processes
+    #     if ddp:
+    #         num_total = torch.tensor(num_total, dtype=torch.long, device=device)
+    #         num_correct_norm = torch.tensor(num_correct_norm, dtype=torch.long, device=device)
+    #         dist.all_reduce(num_total, op=dist.ReduceOp.SUM)
+    #         dist.all_reduce(num_correct_norm, op=dist.ReduceOp.SUM)
+    #         num_total = num_total.item()
+    #         num_correct_norm = num_correct_norm.item()
+    #     acc_norm = num_correct_norm / num_total
+    #     if master_process:
+    #         print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}")
+    #         with open(log_file, "a") as f:
+    #             f.write(f"{step} hella {acc_norm:.4f}\n")
 
     # once in a while generate from the model (except step 0, which is noise)
     if ((step > 0 and step % 250 == 0) or last_step) and (not use_compile):
@@ -457,7 +479,7 @@ for step in range(max_steps):
         while xgen.size(1) < max_length:
             # forward the model to get the logits
             with torch.no_grad():
-                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                with torch.autocast(device_type=device_type, dtype=torch.float16):
                     logits, loss = model(xgen) # (B, T, vocab_size)
                 # take the logits at the last position
                 logits = logits[:, -1, :] # (B, vocab_size)
@@ -489,7 +511,7 @@ for step in range(max_steps):
         # added after video, this field is also used by the forward pass.
         if ddp:
             model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
-        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+        with torch.autocast(device_type=device_type, dtype=torch.float16):
             logits, loss = model(x, y)
         # we have to scale the loss to account for gradient accumulation,
         # because the gradients just add on each successive backward().

@@ -26,6 +26,9 @@ python3 train.py
 
 ## Setup - Docker
 
-
+build the container
+```bash
+docker build -t mambaGPT -f Dockerfile .
+```
 
 
