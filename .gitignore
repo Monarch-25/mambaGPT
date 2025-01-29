@@ -1,6 +1,6 @@
 mamba/
 edu_fineweb10B/
-
+log/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

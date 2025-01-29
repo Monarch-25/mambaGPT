@@ -15,7 +15,7 @@ cd mambaGPT
 git clone https://github.com/state-spaces/mamba.git
 pip install packaging==24.1
 pip install causal-conv1d #Requires an NCCL backend 
-cd mamab && pip install -e . && cd ..
+cd mamba && pip install -e . && cd ..
 pip install wandb==0.17.1
 ```
 
