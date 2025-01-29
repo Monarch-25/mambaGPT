@@ -32,8 +32,10 @@ docker build -t mambaGPT -f Dockerfile .
 ```
 
 
-Ideas
+## Ideas
 ---
-[] Replace learnable positional Embeddings with Rope
-[] Add KV cache
-[] Replace MHA with MLA 
+[ ] Replace learnable positional Embeddings with Rope
+
+[ ] Add KV cache
+
+[ ] Replace MHA with MLA 
